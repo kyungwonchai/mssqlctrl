@@ -692,6 +692,128 @@ a.link-accent:hover {
     border-bottom-color: #7dd3fc;
 }
 
+/* —— Ollama model grid & DB diagnosis tiles —— */
+.model-card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 0.65rem;
+}
+
+.model-pick-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin: 0;
+    padding: 0.65rem 0.75rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.model-pick-card:has(input:checked) {
+    border-color: rgba(56, 189, 248, 0.55);
+    background: rgba(56, 189, 248, 0.1);
+    box-shadow: 0 0 16px var(--accent-glow);
+}
+
+.model-pick-card:hover {
+    border-color: rgba(56, 189, 248, 0.35);
+}
+
+.model-pick-card input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.model-pick-name {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 0.82rem;
+    color: var(--text-primary);
+}
+
+.model-pick-meta {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
+.model-catalog-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    margin: 0;
+    padding: 0.6rem 0.75rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(192, 132, 252, 0.28);
+    background: rgba(88, 28, 135, 0.12);
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+}
+
+.model-catalog-tile:has(input:checked) {
+    border-color: rgba(232, 213, 255, 0.5);
+    background: rgba(147, 51, 234, 0.2);
+}
+
+.model-catalog-tile input {
+    margin-right: 0.35rem;
+    vertical-align: middle;
+}
+
+.model-catalog-tile .catalog-name {
+    font-weight: 600;
+    font-size: 0.82rem;
+}
+
+.model-catalog-tile .catalog-label {
+    display: block;
+    color: var(--text-secondary);
+    padding-left: 1.35rem;
+    line-height: 1.35;
+}
+
+.diag-db-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 0.5rem;
+}
+
+.diag-db-tile {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin: 0;
+    padding: 0.55rem 0.7rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.22);
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.diag-db-tile:has(input:checked) {
+    border-color: rgba(74, 222, 128, 0.45);
+    background: rgba(22, 101, 52, 0.18);
+}
+
+.diag-db-tile:hover {
+    border-color: rgba(74, 222, 128, 0.25);
+}
+
+.diag-db-tile input {
+    flex-shrink: 0;
+}
+
+.meta-pill {
+    font-size: 0.65rem;
+    font-weight: 600;
+}
+
 #diagReports.rounded {
     border-radius: var(--radius-md) !important;
     overflow: hidden;

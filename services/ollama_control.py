@@ -3,7 +3,7 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 
@@ -59,7 +59,7 @@ def ollama_list_models(origin: str) -> List[Dict[str, Any]]:
     return out
 
 
-def try_start_ollama_server(origin: str, wait_seconds: float = 30.0) -> dict[str, Any]:
+def try_start_ollama_server(origin: str, wait_seconds: float = 30.0) -> Dict[str, Any]:
     """
     ollama serve 를 백그라운드로 띄우고 API 응답을 잠시 폴링한다.
     보안: OLLAMA_ALLOW_WEB_START=0 이면 거부.
@@ -104,62 +104,107 @@ def try_start_ollama_server(origin: str, wait_seconds: float = 30.0) -> dict[str
     }
 
 
+# 웹에서 체크해 설치하기 쉬운 인기 태그 (Ollama 라이브러리 기준, 필요 시 수정)
+SUGGESTED_PULL_MODELS: List[Dict[str, str]] = [
+    {"name": "qwen2.5:7b", "label": "Qwen 2.5 7B (가벼움)"},
+    {"name": "qwen2.5:14b", "label": "Qwen 2.5 14B"},
+    {"name": "qwen2.5:32b", "label": "Qwen 2.5 32B"},
+    {"name": "qwen3:8b", "label": "Qwen3 8B"},
+    {"name": "llama3.2:3b", "label": "Llama 3.2 3B"},
+    {"name": "gemma3:4b", "label": "Gemma 3 4B"},
+]
+
+
+def suggested_models_catalog() -> List[Dict[str, str]]:
+    return list(SUGGESTED_PULL_MODELS)
+
+
 _pull_lock = threading.Lock()
-_pull_state: dict[str, Any] = {
+_pull_state: Dict[str, Any] = {
     "active": False,
     "model": None,
     "error": None,
     "log_tail": "",
+    "queue": [],
+    "queue_index": 0,
+    "queue_total": 0,
 }
 
 
-def pull_status() -> dict[str, Any]:
+def pull_status() -> Dict[str, Any]:
     with _pull_lock:
         return {
             "active": _pull_state["active"],
             "model": _pull_state["model"],
             "error": _pull_state["error"],
             "log_tail": _pull_state.get("log_tail") or "",
+            "queue": list(_pull_state.get("queue") or []),
+            "queue_index": int(_pull_state.get("queue_index") or 0),
+            "queue_total": int(_pull_state.get("queue_total") or 0),
         }
 
 
-def start_pull_in_thread(model_name: str) -> Tuple[bool, Optional[str]]:
-    """ollama pull <name> 를 백그라운드에서 실행 (Ollama 데몬이 떠 있어야 함)."""
-    name = (model_name or "").strip()
-    if not name:
-        return False, "모델 이름이 비었습니다."
+def start_pull_sequence_in_thread(model_names: List[str]) -> Tuple[bool, Optional[str]]:
+    """선택한 모델 이름들을 순서대로 ollama pull (한 번에 하나씩, 백그라운드)."""
+    raw = [str(n).strip() for n in model_names if n and str(n).strip()]
+    uniq: List[str] = []
+    seen: Set[str] = set()
+    for n in raw:
+        if n not in seen:
+            seen.add(n)
+            uniq.append(n)
+    if not uniq:
+        return False, "모델 목록이 비었습니다."
     with _pull_lock:
         if _pull_state["active"]:
-            return False, "이미 다른 모델 pull 이 진행 중입니다."
+            return False, "이미 모델 설치(pull) 작업이 진행 중입니다."
         _pull_state["active"] = True
-        _pull_state["model"] = name
         _pull_state["error"] = None
         _pull_state["log_tail"] = ""
+        _pull_state["queue"] = uniq
+        _pull_state["queue_total"] = len(uniq)
+        _pull_state["queue_index"] = 0
+        _pull_state["model"] = uniq[0]
 
     def job():
+        exe = shutil.which("ollama")
         try:
-            exe = shutil.which("ollama")
             if not exe:
                 raise RuntimeError("ollama CLI 가 PATH 에 없습니다.")
-            p = subprocess.run(
-                [exe, "pull", name],
-                capture_output=True,
-                text=True,
-                timeout=7200,
-            )
-            tail = ((p.stderr or "") + "\n" + (p.stdout or ""))[-2500:]
-            with _pull_lock:
-                _pull_state["log_tail"] = tail.strip()
-            if p.returncode != 0:
-                raise RuntimeError(
-                    (p.stderr or p.stdout or "").strip() or f"exit {p.returncode}"
+            all_tail = []
+            for i, name in enumerate(uniq):
+                with _pull_lock:
+                    _pull_state["model"] = name
+                    _pull_state["queue_index"] = i + 1
+                p = subprocess.run(
+                    [exe, "pull", name],
+                    capture_output=True,
+                    text=True,
+                    timeout=7200,
                 )
+                tail = ((p.stderr or "") + "\n" + (p.stdout or ""))[-1200:]
+                all_tail.append(f"=== {name} ===\n{tail}")
+                if p.returncode != 0:
+                    raise RuntimeError(
+                        f"{name}: "
+                        + ((p.stderr or p.stdout or "").strip() or f"exit {p.returncode}")
+                    )
+            with _pull_lock:
+                _pull_state["log_tail"] = "\n".join(all_tail)[-3500:]
         except Exception as e:
             with _pull_lock:
                 _pull_state["error"] = str(e)
         finally:
             with _pull_lock:
                 _pull_state["active"] = False
+                _pull_state["queue"] = []
+                _pull_state["queue_index"] = 0
+                _pull_state["queue_total"] = 0
 
     threading.Thread(target=job, daemon=True).start()
     return True, None
+
+
+def start_pull_in_thread(model_name: str) -> Tuple[bool, Optional[str]]:
+    """단일 ollama pull (백그라운드)."""
+    return start_pull_sequence_in_thread([model_name])

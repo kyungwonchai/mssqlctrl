@@ -7,7 +7,7 @@ from sqlalchemy import inspect as sa_inspect, text
 from models import db, DBConnection, ExtractionTask, DiagnosisReport
 from services.sql_extractor import get_extractor
 from services.file_manager import ExportManager
-from services.agentic_diagnosis import build_diagnosis_context, run_agentic_diagnosis
+from services.diagnosis_worker import execute_diagnosis_report, run_diagnosis_queue
 from services.ollama_control import (
     v1_base_to_origin,
     ollama_ping,
@@ -15,17 +15,76 @@ from services.ollama_control import (
     ollama_list_models,
     try_start_ollama_server,
     start_pull_in_thread,
+    start_pull_sequence_in_thread,
     pull_status,
+    suggested_models_catalog,
 )
 
+
+def _app_base_dir() -> str:
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _sqlite_uri(abs_path: str) -> str:
+    return "sqlite:///" + os.path.abspath(abs_path).replace("\\", "/")
+
+
+def _exports_tree_has_data(exports_root: str) -> bool:
+    """연결명/DB명/tables 구조가 하나라도 있으면 True (실추출 데이터 존재)."""
+    if not os.path.isdir(exports_root):
+        return False
+    try:
+        for conn_dir in os.listdir(exports_root):
+            cp = os.path.join(exports_root, conn_dir)
+            if not os.path.isdir(cp):
+                continue
+            for dbname in os.listdir(cp):
+                tables = os.path.join(cp, dbname, "tables")
+                if os.path.isdir(tables):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _resolve_export_root() -> str:
+    """
+    프로덕션에서 cwd가 달라져 빈 exports 를 보는 문제 방지.
+    우선순위: MSSQLCTRL_EXPORT_ROOT → app.py 옆 exports(데이터 있으면) → cwd/exports(데이터 있으면) → app.py 옆 exports(신규).
+    """
+    if os.environ.get("MSSQLCTRL_EXPORT_ROOT"):
+        return os.path.abspath(os.environ["MSSQLCTRL_EXPORT_ROOT"])
+    app_dir = _app_base_dir()
+    next_app = os.path.join(app_dir, "exports")
+    cwd_exp = os.path.join(os.getcwd(), "exports")
+    if _exports_tree_has_data(next_app):
+        return next_app
+    if _exports_tree_has_data(cwd_exp):
+        return cwd_exp
+    return next_app
+
+
+def _resolve_sqlite_uri() -> str:
+    if os.environ.get("MSSQLCTRL_DATABASE_URL"):
+        return os.environ["MSSQLCTRL_DATABASE_URL"]
+    app_dir = _app_base_dir()
+    db_app = os.path.join(app_dir, "connections.db")
+    db_cwd = os.path.join(os.getcwd(), "connections.db")
+    if os.path.isfile(db_app):
+        return _sqlite_uri(db_app)
+    if os.path.isfile(db_cwd):
+        return _sqlite_uri(db_cwd)
+    return _sqlite_uri(db_app)
+
+
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///connections.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.secret_key = 'db_ctrl_secret'
+app.config["SQLALCHEMY_DATABASE_URI"] = _resolve_sqlite_uri()
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.secret_key = "db_ctrl_secret"
 
 db.init_app(app)
-EXPORT_ROOT = os.path.join(os.getcwd(), 'exports')
-if not os.path.exists(EXPORT_ROOT): os.makedirs(EXPORT_ROOT)
+EXPORT_ROOT = _resolve_export_root()
+os.makedirs(EXPORT_ROOT, exist_ok=True)
 
 
 def ensure_diagnosis_schema():
@@ -155,7 +214,6 @@ def get_tasks():
     } for t in tasks])
 
 
-@app.route('/export_catalog')
 def _llm_v1_base_from_request():
     if request.method == "GET":
         raw = request.args.get("llm_base_url")
@@ -211,11 +269,19 @@ def ollama_start():
     return jsonify(out)
 
 
+@app.route("/ollama/catalog")
+def ollama_catalog():
+    return jsonify({"models": suggested_models_catalog()})
+
+
 @app.route("/ollama/pull", methods=["POST"])
 def ollama_pull():
     data = request.json or {}
-    name = data.get("name") or data.get("model")
-    ok, err = start_pull_in_thread(name)
+    models = data.get("models")
+    if isinstance(models, list) and len(models) > 0:
+        ok, err = start_pull_sequence_in_thread([str(m) for m in models if m])
+    else:
+        ok, err = start_pull_in_thread(data.get("name") or data.get("model") or "")
     if not ok:
         return jsonify({"success": False, "error": err}), 400
     return jsonify({"success": True})
@@ -226,6 +292,7 @@ def ollama_pull_status():
     return jsonify(pull_status())
 
 
+@app.route("/export_catalog")
 def export_catalog():
     out = []
     for c in DBConnection.query.all():
@@ -241,40 +308,24 @@ def export_catalog():
                         "has_metadata": os.path.isfile(os.path.join(p, "db_metadata.json")),
                     })
         out.append({"conn_id": c.id, "conn_name": c.name, "databases": databases})
-    return jsonify(out)
+    return jsonify({
+        "export_root": EXPORT_ROOT,
+        "connections": out,
+    })
 
 
 def run_diagnosis_job(report_id, conn_id, database_name, use_live, llm_base, llm_model, api_key):
     with app.app_context():
-        report = DiagnosisReport.query.get(report_id)
-        conn = DBConnection.query.get(conn_id)
-        if not report or not conn:
-            return
-        try:
-            report.status = "Running"
-            db.session.commit()
-            live = None
-            if use_live:
-                ext = get_extractor(conn)
-                live = ext.get_database_health_snapshot(database_name)
-            ctx = build_diagnosis_context(
-                EXPORT_ROOT, conn.name, database_name, live_snapshot=live
-            )
-            if len(ctx.strip()) < 80:
-                raise ValueError(
-                    "진단 컨텍스트가 없습니다. 해당 연결에서 DB 추출을 먼저 실행하세요."
-                )
-            report.report_text = run_agentic_diagnosis(
-                ctx, llm_base, llm_model, api_key=api_key
-            )
-            report.status = "Completed"
-            report.message = None
-        except Exception as e:
-            report.status = "Failed"
-            report.message = str(e)
-        finally:
-            report.completed_at = datetime.utcnow()
-            db.session.commit()
+        execute_diagnosis_report(
+            EXPORT_ROOT,
+            report_id,
+            conn_id,
+            database_name,
+            use_live,
+            llm_base,
+            llm_model,
+            api_key,
+        )
 
 
 @app.route('/diagnosis/start', methods=['POST'])
@@ -302,6 +353,50 @@ def diagnosis_start():
         args=(report.id, conn_id, database_name, use_live, base, model, api_key),
     ).start()
     return jsonify({"success": True, "report_id": report.id})
+
+
+@app.route("/diagnosis/batch", methods=["POST"])
+def diagnosis_batch():
+    data = request.json or {}
+    conn_id = data.get("conn_id")
+    databases = data.get("databases")
+    if conn_id is None or not isinstance(databases, list) or not databases:
+        return jsonify(
+            {"success": False, "error": "conn_id 와 비어 있지 않은 databases 배열이 필요합니다."}
+        ), 400
+    c = DBConnection.query.get_or_404(conn_id)
+    base = (data.get("llm_base_url") or os.getenv("LLM_BASE_URL") or "http://127.0.0.1:11434/v1").rstrip("/")
+    model = data.get("model") or os.getenv("LLM_MODEL") or "qwen2.5:latest"
+    api_key = data.get("api_key") or os.getenv("LLM_API_KEY") or None
+    use_live = bool(data.get("use_live"))
+    report_ids = []
+    for dbname in databases:
+        name = (dbname or "").strip()
+        if not name:
+            continue
+        rep = DiagnosisReport(
+            conn_name=c.name,
+            database_name=name,
+            status="Pending",
+            llm_model=model,
+        )
+        db.session.add(rep)
+        db.session.flush()
+        report_ids.append(rep.id)
+    db.session.commit()
+    if not report_ids:
+        return jsonify({"success": False, "error": "유효한 DB 이름이 없습니다."}), 400
+    run_diagnosis_queue(
+        app,
+        EXPORT_ROOT,
+        report_ids,
+        conn_id=int(conn_id),
+        use_live=use_live,
+        llm_base=base,
+        llm_model=model,
+        api_key=api_key,
+    )
+    return jsonify({"success": True, "report_ids": report_ids, "count": len(report_ids)})
 
 
 @app.route('/diagnosis/reports')

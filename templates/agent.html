@@ -35,51 +35,60 @@
                     <span id="ollamaStatusBadge" class="badge bg-secondary">미확인</span>
                     <span id="ollamaVersionHint" class="small text-secondary"></span>
                 </div>
-                <div class="d-flex flex-wrap gap-2 mb-2">
+                <div class="d-flex flex-wrap gap-2 mb-3">
                     <button type="button" class="btn btn-outline-agent" onclick="refreshOllamaStatus()">상태·모델 목록 새로고침</button>
                     <button type="button" class="btn btn-outline-agent" onclick="startOllamaServer()">Ollama 시작 (ollama serve)</button>
                 </div>
                 <p class="small text-secondary mb-3">원격/공용 서버에서는 <code>OLLAMA_ALLOW_WEB_START=0</code> 로 웹에서의 <code>ollama serve</code> 자동 기동을 끌 수 있습니다.</p>
-                <div class="row g-2 align-items-end">
-                    <div class="col-md-6">
-                        <label class="form-label text-secondary small">설치할 모델 (ollama pull)</label>
-                        <input type="text" id="ollamaPullName" class="form-control" placeholder="예: qwen2.5:7b, qwen3:8b">
-                    </div>
-                    <div class="col-md-6">
-                        <button type="button" class="btn btn-outline-agent mt-4 mt-md-0" onclick="startOllamaPull()">모델 다운로드 설치</button>
-                        <small class="text-secondary d-block mt-1">Ollama가 떠 있는 상태에서 실행됩니다. 용량·시간이 큽니다.</small>
-                    </div>
+
+                <div class="section-label" style="margin-bottom:0.6rem">설치된 모델 — 진단에 쓸 모델 선택</div>
+                <p class="small text-secondary mb-2">아래 라디오를 고르면 &ldquo;모델명&rdquo; 입력란에 반영됩니다.</p>
+                <div id="ollamaInstalledList" class="model-card-grid mb-4"></div>
+
+                <div class="section-label" style="margin-bottom:0.6rem">추천 모델 — 설치할 항목 체크 후 일괄 pull</div>
+                <div id="ollamaSuggestedList" class="model-card-grid mb-3"></div>
+                <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+                    <button type="button" class="btn btn-outline-agent" onclick="pullSelectedCatalog()">체크한 모델 설치 (순차)</button>
+                    <input type="text" id="ollamaPullExtra" class="form-control form-control-sm" style="max-width:240px" placeholder="추가 태그 (예: mistral:7b)">
+                    <button type="button" class="btn btn-outline-agent btn-sm" onclick="pullExtraOnly()">추가만 설치</button>
                 </div>
+                <small class="text-secondary d-block mb-2">여러 개를 선택하면 백그라운드에서 한 번에 하나씩 순서대로 받습니다.</small>
                 <div id="ollamaPullLog" class="mt-2 d-none border border-secondary rounded p-2 bg-dark"></div>
             </div>
             <datalist id="ollamaModelList"></datalist>
+
             <div class="row g-3 align-items-end">
-                <div class="col-md-3">
-                    <label class="form-label text-secondary small">연결</label>
+                <div class="col-md-4 col-lg-3">
+                    <label class="form-label text-secondary small">연결 (인스턴스)</label>
                     <select id="diagConn" class="form-select"></select>
                 </div>
-                <div class="col-md-3">
-                    <label class="form-label text-secondary small">데이터베이스 (추출 폴더)</label>
-                    <select id="diagDb" class="form-select"></select>
-                </div>
-                <div class="col-md-2">
+                <div class="col-md-5 col-lg-4">
                     <label class="form-label text-secondary small">LLM API 베이스 (OpenAI 호환)</label>
                     <input type="text" id="diagBase" class="form-control" value="http://127.0.0.1:11434/v1" placeholder="http://127.0.0.1:11434/v1">
                 </div>
-                <div class="col-md-2">
-                    <label class="form-label text-secondary small">모델명 (목록 또는 직접 입력)</label>
+                <div class="col-md-3 col-lg-3">
+                    <label class="form-label text-secondary small">모델명 (직접 입력 가능)</label>
                     <input type="text" id="diagModel" class="form-control" list="ollamaModelList" value="qwen2.5:latest" placeholder="qwen2.5:14b">
                 </div>
-                <div class="col-md-2 d-flex align-items-center pt-4">
+                <div class="col-md-12 col-lg-2 d-flex align-items-center pt-lg-4">
                     <div class="form-check">
                         <input class="form-check-input" type="checkbox" id="diagLive">
                         <label class="form-check-label small" for="diagLive">실시간 용량 스냅샷 병합</label>
                     </div>
                 </div>
             </div>
-            <div class="mt-3 d-flex flex-wrap gap-2 align-items-center">
-                <button type="button" class="btn-agent" id="diagRunBtn" onclick="startDiagnosis()">진단 실행 (백그라운드)</button>
-                <small class="text-secondary" id="diagHint">추출된 DB가 없으면 목록이 비어 있습니다. <a href="{{ url_for('index') }}" class="link-accent">연결·추출에서 먼저 추출</a>을 완료하세요.</small>
+
+            <div class="section-label mt-4" style="margin-bottom:0.6rem">진단할 DB 선택 (해당 연결에서 추출된 DB만)</div>
+            <p id="exportRootHint" class="small mb-2" style="color: var(--text-muted); word-break: break-all;"></p>
+            <p class="small text-secondary mb-2">복수 선택 시 <strong>백그라운드에서 순차</strong>로 LLM 진단합니다. 서버 작업 폴더가 바뀌어도 추출물을 찾도록 경로를 고정·자동 탐지합니다. 운영 시 경로를 직접 쓰려면 환경변수 <code class="storage-hint">MSSQLCTRL_EXPORT_ROOT</code> 를 설정하세요.</p>
+            <div id="diagDbChecks" class="diag-db-grid mb-2"></div>
+            <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox" id="diagDbSelectAll">
+                <label class="form-check-label small text-secondary" for="diagDbSelectAll">이 연결의 추출 DB 전체 선택</label>
+            </div>
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+                <button type="button" class="btn-agent" id="diagBatchBtn" onclick="startDiagnosisBatch()">선택 DB 일괄 진단 (백그라운드·순차)</button>
+                <small class="text-secondary" id="diagHint">추출이 없으면 칸이 비어 있습니다. <a href="{{ url_for('index') }}" class="link-accent">연결·추출</a>에서 먼저 추출하세요.</small>
             </div>
             <div class="mt-5">
                 <div class="section-label">최근 진단 요약</div>
@@ -109,15 +118,83 @@
     <script>
         const diagReportModal = new bootstrap.Modal(document.getElementById('diagReportModal'));
         let exportCatalog = [];
+        let suggestedCatalog = [];
 
         function escHtml(s) {
             if (!s) return '';
             return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         }
+        function escAttr(s) {
+            return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+        }
+
+        function formatBytes(n) {
+            if (n == null || n === '' || isNaN(Number(n))) return '';
+            let b = Number(n);
+            const u = ['B','KB','MB','GB','TB'];
+            let i = 0;
+            while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+            return (i === 0 ? b : b.toFixed(1)) + ' ' + u[i];
+        }
+
+        function renderInstalledModels(models) {
+            const el = document.getElementById('ollamaInstalledList');
+            const cur = document.getElementById('diagModel').value.trim();
+            if (!models || !models.length) {
+                el.innerHTML = '<div class="text-secondary small py-2">설치된 모델이 없습니다. 아래 추천 목록에서 체크해 설치하세요.</div>';
+                return;
+            }
+            el.innerHTML = models.map(m => {
+                const name = m.name || '';
+                const chk = name === cur ? ' checked' : '';
+                return `<label class="model-pick-card"><input type="radio" name="ollamaPickModel" value="${escAttr(name)}"${chk}><span class="model-pick-name">${escHtml(name)}</span><span class="model-pick-meta">${formatBytes(m.size)}</span></label>`;
+            }).join('');
+            el.querySelectorAll('input[name=ollamaPickModel]').forEach(inp => {
+                inp.addEventListener('change', () => {
+                    if (inp.checked) document.getElementById('diagModel').value = inp.value;
+                });
+            });
+        }
+
+        async function loadSuggestedCatalog() {
+            try {
+                const res = await fetch('/ollama/catalog');
+                const d = await res.json();
+                suggestedCatalog = d.models || [];
+            } catch (e) {
+                suggestedCatalog = [];
+            }
+            const el = document.getElementById('ollamaSuggestedList');
+            if (!suggestedCatalog.length) {
+                el.innerHTML = '<div class="text-secondary small">추천 목록을 불러오지 못했습니다.</div>';
+                return;
+            }
+            el.innerHTML = suggestedCatalog.map(m =>
+                `<label class="model-catalog-tile"><input type="checkbox" class="ollama-cat-cb" value="${escAttr(m.name)}"><span class="catalog-name">${escHtml(m.name)}</span><small class="catalog-label">${escHtml(m.label || '')}</small></label>`
+            ).join('');
+        }
+
+        function renderDbChecks(entry) {
+            const wrap = document.getElementById('diagDbChecks');
+            if (!entry || !entry.databases || !entry.databases.length) {
+                wrap.innerHTML = '<div class="text-secondary small py-2">이 연결에 추출된 DB가 없습니다.</div>';
+                return;
+            }
+            wrap.innerHTML = entry.databases.map(d =>
+                `<label class="diag-db-tile"><input type="checkbox" class="diag-db-cb" value="${escAttr(d.name)}"><span>${escHtml(d.name)}</span>${d.has_metadata ? ' <span class="badge bg-secondary meta-pill">메타</span>' : ''}</label>`
+            ).join('');
+            const sa = document.getElementById('diagDbSelectAll');
+            if (sa) sa.checked = false;
+        }
 
         async function loadExportCatalog() {
             const res = await fetch('/export_catalog');
-            exportCatalog = await res.json();
+            const payload = await res.json();
+            exportCatalog = Array.isArray(payload) ? payload : (payload.connections || []);
+            const rootEl = document.getElementById('exportRootHint');
+            if (rootEl && payload.export_root) {
+                rootEl.innerHTML = '현재 추출 폴더(스캔 기준): <code class="storage-hint">' + escHtml(payload.export_root) + '</code>';
+            }
             const sel = document.getElementById('diagConn');
             const prev = sel.value;
             sel.innerHTML = '<option value="">— 연결 선택 —</option>' +
@@ -127,35 +204,40 @@
             sel.onchange = () => {
                 const id = sel.value;
                 const entry = exportCatalog.find(x => String(x.conn_id) === String(id));
-                const dbs = document.getElementById('diagDb');
-                dbs.innerHTML = entry ? entry.databases.map(d =>
-                    `<option value="${d.name}">${d.name}${d.has_metadata ? ' ●' : ''}</option>`).join('') : '';
+                renderDbChecks(entry);
             };
             sel.dispatchEvent(new Event('change'));
         }
 
-        async function startDiagnosis() {
+        document.getElementById('diagDbSelectAll').addEventListener('change', function() {
+            document.querySelectorAll('.diag-db-cb').forEach(c => { c.checked = this.checked; });
+        });
+
+        async function startDiagnosisBatch() {
             const conn = document.getElementById('diagConn').value;
-            const database = document.getElementById('diagDb').value;
-            if (!conn || !database) return alert('연결과 데이터베이스를 선택하세요.');
+            const dbs = Array.from(document.querySelectorAll('.diag-db-cb:checked')).map(c => c.value);
+            if (!conn || !dbs.length) return alert('연결과 진단할 DB를 하나 이상 선택하세요.');
             const body = {
                 conn_id: parseInt(conn, 10),
-                database,
+                databases: dbs,
                 llm_base_url: document.getElementById('diagBase').value.trim(),
                 model: document.getElementById('diagModel').value.trim(),
                 use_live: document.getElementById('diagLive').checked,
             };
-            const btn = document.getElementById('diagRunBtn');
+            const btn = document.getElementById('diagBatchBtn');
             btn.disabled = true;
             try {
-                const res = await fetch('/diagnosis/start', {
+                const res = await fetch('/diagnosis/batch', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
                 });
                 const data = await res.json();
-                if (!data.success) alert(data.error || '시작 실패');
-                else refreshDiagnosisReports();
+                if (!data.success) alert(data.error || '실패');
+                else {
+                    alert(`진단 ${data.count}건을 큐에 넣었습니다. GPU 여유에 따라 순차 처리됩니다.`);
+                    refreshDiagnosisReports();
+                }
             } finally {
                 btn.disabled = false;
             }
@@ -211,6 +293,9 @@
                     o.value = m.name;
                     dl.appendChild(o);
                 });
+                renderInstalledModels(d.models);
+            } else {
+                renderInstalledModels([]);
             }
         }
 
@@ -230,7 +315,24 @@
                 ver.textContent = d.error || '';
             }
             if (d.ok) await refreshOllamaModelsOnly();
-            else document.getElementById('ollamaModelList').innerHTML = '';
+            else {
+                document.getElementById('ollamaModelList').innerHTML = '';
+                renderInstalledModels([]);
+            }
+        }
+
+        function pullSelectedCatalog() {
+            const names = Array.from(document.querySelectorAll('.ollama-cat-cb:checked')).map(c => c.value);
+            const extra = document.getElementById('ollamaPullExtra').value.trim();
+            if (extra) names.push(extra);
+            if (!names.length) return alert('설치할 모델을 체크하거나 추가 태그를 입력하세요.');
+            startOllamaPull(names);
+        }
+
+        function pullExtraOnly() {
+            const extra = document.getElementById('ollamaPullExtra').value.trim();
+            if (!extra) return alert('추가 태그를 입력하세요.');
+            startOllamaPull([extra]);
         }
 
         async function startOllamaServer() {
@@ -250,16 +352,16 @@
             refreshOllamaStatus();
         }
 
-        async function startOllamaPull() {
-            const name = document.getElementById('ollamaPullName').value.trim();
-            if (!name) return alert('설치할 모델명을 입력하세요. (예: qwen2.5:7b)');
+        async function startOllamaPull(modelList) {
+            const names = Array.isArray(modelList) ? modelList.filter(Boolean) : [];
+            if (!names.length) return;
             const logEl = document.getElementById('ollamaPullLog');
             logEl.classList.remove('d-none');
-            logEl.textContent = 'pull 작업을 백그라운드에서 시작합니다…';
+            logEl.textContent = 'pull ' + names.length + '건을 백그라운드에서 순차 시작…';
             const res = await fetch('/ollama/pull', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name }),
+                body: JSON.stringify({ models: names }),
             });
             const d = await res.json();
             if (!d.success) {
@@ -270,14 +372,15 @@
             pullPollTimer = setInterval(async () => {
                 const st = await fetch('/ollama/pull/status').then(r => r.json());
                 if (st.active) {
-                    logEl.textContent = '설치 중: ' + (st.model || name) + ' …';
+                    const prog = (st.queue_total > 0) ? ` (${st.queue_index}/${st.queue_total}) ` : ' ';
+                    logEl.textContent = '설치 중' + prog + (st.model || '') + ' …';
                 } else {
                     clearInterval(pullPollTimer);
                     pullPollTimer = null;
                     if (st.error) {
                         logEl.textContent = '오류: ' + st.error + (st.log_tail ? '\n' + st.log_tail : '');
                     } else {
-                        logEl.textContent = '완료: ' + (st.model || name);
+                        logEl.textContent = '완료 (선택한 모델 순차 설치 종료)';
                         refreshOllamaModelsOnly();
                         refreshOllamaStatus();
                     }
@@ -286,6 +389,7 @@
         }
 
         setInterval(refreshDiagnosisReports, 4000);
+        loadSuggestedCatalog();
         loadExportCatalog();
         refreshDiagnosisReports();
         refreshOllamaStatus();
