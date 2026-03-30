@@ -1,108 +1,127 @@
 import pymssql
+import pymysql
 import json
+from abc import ABC, abstractmethod
 
-class SQLExtractorService:
-    def __init__(self, conn_info):
-        self.host = f"{conn_info.host}:{conn_info.port}"
-        self.user = conn_info.user
-        self.password = conn_info.password
+class BaseExtractor(ABC):
+    @abstractmethod
+    def get_databases(self): pass
+    @abstractmethod
+    def get_tables(self, db_name): pass
+    @abstractmethod
+    def get_views(self, db_name): pass
+    @abstractmethod
+    def get_procedures(self, db_name): pass
+    @abstractmethod
+    def get_triggers(self, db_name): pass
+    @abstractmethod
+    def get_table_ddl(self, db_name, table_name): pass
+    @abstractmethod
+    def get_table_sample(self, db_name, table_name): pass
+    @abstractmethod
+    def get_object_definition(self, db_name, object_name): pass
 
-    def _get_connection(self, database='master'):
-        return pymssql.connect(
-            server=self.host,
-            user=self.user,
-            password=self.password,
-            database=database,
-            charset='UTF-8'
-        )
-
+class MSSQLExtractor(BaseExtractor):
+    def __init__(self, c):
+        self.host, self.user, self.pw = f"{c.host}:{c.port}", c.user, c.password
+    def _conn(self, db='master'):
+        return pymssql.connect(server=self.host, user=self.user, password=self.pw, database=db)
     def get_databases(self):
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT name FROM sys.databases WHERE state_desc = 'ONLINE'")
-                return [row[0] for row in cursor.fetchall()]
-
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT name FROM sys.databases WHERE state_desc='ONLINE' AND name NOT IN ('master','model','msdb','tempdb')")
+                return [r[0] for r in cur.fetchall()]
     def get_tables(self, db_name):
-        with self._get_connection(db_name) as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'")
-                return [row[0] for row in cursor.fetchall()]
-
+        with self._conn(db_name) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE'")
+                return [r[0] for r in cur.fetchall()]
     def get_views(self, db_name):
-        with self._get_connection(db_name) as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS")
-                return [row[0] for row in cursor.fetchall()]
-
+        with self._conn(db_name) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS")
+                return [r[0] for r in cur.fetchall()]
     def get_procedures(self, db_name):
-        with self._get_connection(db_name) as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT name FROM sys.procedures")
-                return [row[0] for row in cursor.fetchall()]
-
+        with self._conn(db_name) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT name FROM sys.procedures")
+                return [r[0] for r in cur.fetchall()]
     def get_triggers(self, db_name):
-        with self._get_connection(db_name) as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT name FROM sys.triggers")
-                return [row[0] for row in cursor.fetchall()]
-
+        with self._conn(db_name) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT name FROM sys.triggers")
+                return [r[0] for r in cur.fetchall()]
     def get_table_ddl(self, db_name, table_name):
-        # Simplistic approach to get CREATE TABLE-like info using sp_help or sys.columns
-        # Since sp_help is verbose, we'll fetch column info to build a dummy DDL or just use sys.sql_modules if available
-        # Real DDL extraction in SQL Server is usually done via SMO, but here we'll use T-SQL
-        query = f"""
-        SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = '{table_name}'
-        ORDER BY ORDINAL_POSITION
-        """
-        with self._get_connection(db_name) as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(query)
-                cols = cursor.fetchall()
-                ddl = f"CREATE TABLE [{table_name}] (\n"
-                col_defs = []
-                for col in cols:
-                    name, dtype, length, is_null = col
-                    len_str = f"({length})" if length and length != -1 else ""
-                    null_str = "NULL" if is_null == 'YES' else "NOT NULL"
-                    col_defs.append(f"    [{name}] {dtype}{len_str} {null_str}")
-                ddl += ",\n".join(col_defs) + "\n);"
-                return ddl
-
+        with self._conn(db_name) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='{table_name}'")
+                cols = cur.fetchall()
+                return f"CREATE TABLE [{table_name}] (\n" + ",\n".join([f" [{c[0]}] {c[1]}({c[2]})" for c in cols]) + "\n);"
     def get_table_sample(self, db_name, table_name):
-        # Detect possible date columns for sorting
-        query_cols = f"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{table_name}'"
-        date_col = None
-        
-        with self._get_connection(db_name) as conn:
-            with conn.cursor(as_dict=True) as cursor:
-                cursor.execute(query_cols)
-                cols = [row['COLUMN_NAME'] for row in cursor.fetchall()]
-                
-                # Heuristic: find a date column to sort by
-                date_hints = ['date', 'time', 'created', 'reg', 'modified', 'updated']
-                for c in cols:
-                    if any(hint in c.lower() for hint in date_hints):
-                        date_col = c
-                        break
-                
-                sort_clause = f"ORDER BY [{date_col}] DESC" if date_col else ""
-                sample_query = f"SELECT TOP 20 * FROM [{table_name}] {sort_clause}"
-                
-                try:
-                    cursor.execute(sample_query)
-                    return cursor.fetchall()
-                except:
-                    # Fallback if sorting fails
-                    cursor.execute(f"SELECT TOP 20 * FROM [{table_name}]")
-                    return cursor.fetchall()
-
+        with self._conn(db_name) as conn:
+            with conn.cursor(as_dict=True) as cur:
+                cur.execute(f"SELECT TOP 20 * FROM [{table_name}]")
+                return cur.fetchall()
     def get_object_definition(self, db_name, object_name):
-        # Works for Views, Procedures, and Triggers
-        query = f"SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID('{object_name}')"
-        with self._get_connection(db_name) as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(query)
-                row = cursor.fetchone()
-                return row[0] if row else "-- Definition not found"
+        with self._conn(db_name) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT definition FROM sys.sql_modules WHERE object_id=OBJECT_ID('{object_name}')")
+                r = cur.fetchone()
+                return r[0] if r else ""
+
+class MySQLExtractor(BaseExtractor):
+    def __init__(self, c):
+        self.host, self.port, self.user, self.pw = c.host, c.port, c.user, c.password
+    def _conn(self, db=None):
+        return pymysql.connect(host=self.host, port=self.port, user=self.user, password=self.pw, database=db, charset='utf8mb4')
+    def get_databases(self):
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SHOW DATABASES")
+                return [r[0] for r in cur.fetchall() if r[0] not in ('information_schema','mysql','performance_schema','sys')]
+    def get_tables(self, db_name):
+        with self._conn(db_name) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'")
+                return [r[0] for r in cur.fetchall()]
+    def get_views(self, db_name):
+        with self._conn(db_name) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SHOW FULL TABLES WHERE Table_type = 'VIEW'")
+                return [r[0] for r in cur.fetchall()]
+    def get_procedures(self, db_name):
+        with self._conn(db_name) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SHOW PROCEDURE STATUS WHERE Db = %s", (db_name,))
+                return [r[1] for r in cur.fetchall()]
+    def get_triggers(self, db_name):
+        with self._conn(db_name) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SHOW TRIGGERS")
+                return [r[0] for r in cur.fetchall()]
+    def get_table_ddl(self, db_name, table_name):
+        with self._conn(db_name) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SHOW CREATE TABLE `{table_name}`")
+                return cur.fetchone()[1]
+    def get_table_sample(self, db_name, table_name):
+        with self._conn(db_name) as conn:
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                cur.execute(f"SELECT * FROM `{table_name}` LIMIT 20")
+                return cur.fetchall()
+    def get_object_definition(self, db_name, object_name):
+        # MySQL requires specific 'SHOW CREATE' per object type. Simplified here for View:
+        with self._conn(db_name) as conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(f"SHOW CREATE VIEW `{object_name}`")
+                    return cur.fetchone()[1]
+                except:
+                    try:
+                        cur.execute(f"SHOW CREATE PROCEDURE `{object_name}`")
+                        return cur.fetchone()[2]
+                    except: return "-- Source not found"
+
+def get_extractor(conn_info):
+    if conn_info.db_type == 'mssql': return MSSQLExtractor(conn_info)
+    return MySQLExtractor(conn_info)

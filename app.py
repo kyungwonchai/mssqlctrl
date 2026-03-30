@@ -1,143 +1,105 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
-import os
-from models import db, MSSQLConnection
-from services.sql_extractor import SQLExtractorService
+import os, threading
+from datetime import datetime
+from models import db, DBConnection, ExtractionTask
+from services.sql_extractor import get_extractor
 from services.file_manager import ExportManager
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///connections.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.secret_key = 'mssql_ctrl_secret'
+app.secret_key = 'db_ctrl_secret'
 
 db.init_app(app)
-
-# Ensure export directory exists
 EXPORT_ROOT = os.path.join(os.getcwd(), 'exports')
-if not os.path.exists(EXPORT_ROOT):
-    os.makedirs(EXPORT_ROOT)
+if not os.path.exists(EXPORT_ROOT): os.makedirs(EXPORT_ROOT)
 
 @app.route('/')
 def index():
-    connections = MSSQLConnection.query.all()
-    return render_template('index.html', connections=connections)
+    conns = DBConnection.query.all()
+    tasks = ExtractionTask.query.order_by(ExtractionTask.created_at.desc()).limit(10).all()
+    return render_template('index.html', connections=conns, tasks=tasks)
 
 @app.route('/add_connection', methods=['POST'])
 def add_connection():
-    name = request.form.get('name')
-    host = request.form.get('host')
-    port = request.form.get('port', 1433)
-    user = request.form.get('user')
-    password = request.form.get('password')
-    
-    new_conn = MSSQLConnection(name=name, host=host, port=int(port), user=user, password=password)
+    new_conn = DBConnection(
+        db_type=request.form.get('db_type'),
+        name=request.form.get('name'),
+        host=request.form.get('host'),
+        port=int(request.form.get('port', 1433)),
+        user=request.form.get('user'),
+        password=request.form.get('password')
+    )
     db.session.add(new_conn)
     db.session.commit()
-    flash('Connection added successfully!')
-    return redirect(url_for('index'))
-
-@app.route('/export/<int:conn_id>')
-def export_database(conn_id):
-    conn_info = MSSQLConnection.query.get_or_404(conn_id)
-    extractor = SQLExtractorService(conn_info)
-    manager = ExportManager(EXPORT_ROOT, conn_info.name)
-    
-    try:
-        # 1. Get all databases
-        databases = extractor.get_databases()
-        
-        for db_name in databases:
-            if db_name in ['master', 'tempdb', 'model', 'msdb']: continue
-            
-            # Create DB folder
-            manager.create_db_structure(db_name)
-            
-            # 2. Extract Tables (DDL + Sample)
-            tables = extractor.get_tables(db_name)
-            for table in tables:
-                ddl = extractor.get_table_ddl(db_name, table)
-                sample = extractor.get_table_sample(db_name, table)
-                manager.save_table_data(db_name, table, ddl, sample)
-            
-            # 3. Extract Views
-            views = extractor.get_views(db_name)
-            for view in views:
-                code = extractor.get_object_definition(db_name, view)
-                manager.save_object(db_name, 'views', view, code)
-            
-            # 4. Extract Procedures
-            procs = extractor.get_procedures(db_name)
-            for proc in procs:
-                code = extractor.get_object_definition(db_name, proc)
-                manager.save_object(db_name, 'procedures', proc, code)
-                
-            # 5. Extract Triggers
-            triggers = extractor.get_triggers(db_name)
-            for trigger in triggers:
-                code = extractor.get_object_definition(db_name, trigger)
-                manager.save_object(db_name, 'triggers', trigger, code)
-                
-        flash(f'Export completed for {conn_info.name}!')
-    except Exception as e:
-        flash(f'Error during export: {str(e)}')
-    
     return redirect(url_for('index'))
 
 @app.route('/get_databases/<int:conn_id>')
 def get_databases(conn_id):
-    conn_info = MSSQLConnection.query.get_or_404(conn_id)
-    extractor = SQLExtractorService(conn_info)
+    c = DBConnection.query.get_or_404(conn_id)
     try:
-        databases = extractor.get_databases()
-        # Filter system DBs
-        filtered = [db for db in databases if db not in ['master', 'tempdb', 'model', 'msdb']]
-        return jsonify({'success': True, 'databases': filtered})
+        return jsonify({'success': True, 'databases': get_extractor(c).get_databases()})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/batch_export', methods=['POST'])
-def batch_export():
-    data = request.json
-    selections = data.get('selections', []) # List of {conn_id, databases: []}
-    
-    results = []
-    for selection in selections:
-        conn_id = selection.get('conn_id')
-        db_names = selection.get('databases') # If empty, extract all
-        
-        conn_info = MSSQLConnection.query.get(conn_id)
-        if not conn_info: continue
-        
-        extractor = SQLExtractorService(conn_info)
-        manager = ExportManager(EXPORT_ROOT, conn_info.name)
+def run_extraction(task_id, selections):
+    with app.app_context():
+        task = ExtractionTask.query.get(task_id)
+        task.status = 'Running'
+        db.session.commit()
         
         try:
-            if not db_names:
-                db_names = [d for d in extractor.get_databases() if d not in ['master', 'tempdb', 'model', 'msdb']]
+            total_steps = sum(len(s.get('databases', [])) or 1 for s in selections)
+            current_step = 0
             
-            for db_name in db_names:
-                manager.create_db_structure(db_name)
+            for sel in selections:
+                c = DBConnection.query.get(sel['conn_id'])
+                ext = get_extractor(c)
+                mgr = ExportManager(EXPORT_ROOT, c.name)
+                dbs = sel.get('databases') or ext.get_databases()
                 
-                # Extract Tables
-                tables = extractor.get_tables(db_name)
-                for table in tables:
-                    ddl = extractor.get_table_ddl(db_name, table)
-                    sample = extractor.get_table_sample(db_name, table)
-                    manager.save_table_data(db_name, table, ddl, sample)
-                
-                # Extract Views, Procs, Triggers
-                for obj_type, method in [('views', 'get_views'), ('procedures', 'get_procedures'), ('triggers', 'get_triggers')]:
-                    objects = getattr(extractor, method)(db_name)
-                    for obj in objects:
-                        code = extractor.get_object_definition(db_name, obj)
-                        manager.save_object(db_name, obj_type, obj, code)
-            
-            results.append(f"Successfully exported {conn_info.name}")
+                for db_name in dbs:
+                    mgr.create_db_structure(db_name)
+                    # Tables
+                    for t in ext.get_tables(db_name):
+                        mgr.save_table_data(db_name, t, ext.get_table_ddl(db_name, t), ext.get_table_sample(db_name, t))
+                    # Others
+                    for ot, meth in [('views','get_views'),('procedures','get_procedures'),('triggers','get_triggers')]:
+                        for o in getattr(ext, meth)(db_name):
+                            mgr.save_object(db_name, ot, o, ext.get_object_definition(db_name, o))
+                    
+                    current_step += 1
+                    task.progress = int((current_step / total_steps) * 100)
+                    db.session.commit()
+
+            task.status = 'Completed'
+            task.progress = 100
         except Exception as e:
-            results.append(f"Error exporting {conn_info.name}: {str(e)}")
-            
-    return jsonify({'success': True, 'messages': results})
+            task.status = 'Failed'
+            task.message = str(e)
+        finally:
+            task.completed_at = datetime.utcnow()
+            db.session.commit()
+
+@app.route('/batch_export', methods=['POST'])
+def batch_export():
+    selections = request.json.get('selections', [])
+    task = ExtractionTask(conn_name=", ".join([DBConnection.query.get(s['conn_id']).name for s in selections]))
+    db.session.add(task)
+    db.session.commit()
+    
+    threading.Thread(target=run_extraction, args=(task.id, selections)).start()
+    return jsonify({'success': True, 'task_id': task.id})
+
+@app.route('/tasks')
+def get_tasks():
+    tasks = ExtractionTask.query.order_by(ExtractionTask.created_at.desc()).all()
+    return jsonify([{
+        'id': t.id, 'conn_name': t.conn_name, 'status': t.status, 
+        'progress': t.progress, 'message': t.message, 
+        'created_at': t.created_at.strftime('%H:%M:%S')
+    } for t in tasks])
 
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
+    with app.app_context(): db.create_all()
     app.run(host='0.0.0.0', port=10701, debug=True)
