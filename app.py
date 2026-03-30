@@ -57,8 +57,12 @@ with app.app_context():
 @app.route('/')
 def index():
     conns = DBConnection.query.all()
-    tasks = ExtractionTask.query.order_by(ExtractionTask.created_at.desc()).limit(10).all()
-    return render_template('index.html', connections=conns, tasks=tasks)
+    return render_template('index.html', connections=conns)
+
+
+@app.route('/agent')
+def agent_page():
+    return render_template('agent.html')
 
 @app.route('/add_connection', methods=['POST'])
 def add_connection():

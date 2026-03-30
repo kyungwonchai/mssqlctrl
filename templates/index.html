@@ -1,30 +1,20 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MSSQLCtrl · DB Controller</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-</head>
-<body class="app-body bg-deep">
-    <div class="container-fluid app-shell">
+{% extends "base.html" %}
+{% block title %}연결 · 추출 · MSSQLCtrl{% endblock %}
+
+{% block content %}
         <header class="header-section">
             <div class="brand-block">
                 <span class="brand-eyebrow">Infrastructure</span>
                 <h1>Database Controller</h1>
-                <p class="brand-tagline">연결·추출·에이전틱 진단을 한 화면에서. 읽기 중심 점검으로 운영 리스크를 줄입니다.</p>
+                <p class="brand-tagline">등록한 연결 정보는 이 PC의 <strong>로컬 SQLite</strong>(앱 폴더의 <code class="storage-hint">connections.db</code>)에만 저장됩니다. 외부로 전송되지 않습니다.</p>
             </div>
             <div class="d-flex gap-2 flex-wrap align-items-center">
+                <a href="{{ url_for('agent_page') }}" class="btn btn-outline-light btn-sm d-none d-md-inline-flex align-items-center gap-2">에이전틱 진단 화면 →</a>
                 <button type="button" class="btn btn-premium" onclick="startBatchExport()">추출 실행</button>
             </div>
         </header>
 
         <div class="row g-4">
-            <!-- Left Panel: Connection Management -->
             <div class="col-xl-3 col-lg-4">
                 <div class="glass-card p-4 h-100">
                     <div class="panel-head mb-4">
@@ -46,7 +36,6 @@
                 </div>
             </div>
 
-            <!-- Middle Panel: Active Connections -->
             <div class="col-xl-6 col-lg-8">
                 <div class="glass-card p-0 overflow-hidden h-100">
                     <div class="p-4 border-bottom border-secondary panel-head">
@@ -85,7 +74,6 @@
                 </div>
             </div>
 
-            <!-- Right Panel: Live Status Monitor -->
             <div class="col-xl-3 col-lg-12">
                 <div class="glass-card p-4 h-100">
                     <div class="panel-head mb-4">
@@ -93,91 +81,18 @@
                         <span class="panel-title-sm">Live</span>
                     </div>
                     <div id="taskContainer" class="list-group list-group-flush bg-transparent">
-                        <!-- Tasks will load here via AJAX -->
                         <div class="task-empty">아직 추출 작업이 없습니다. 인스턴스를 선택한 뒤 추출을 실행하세요.</div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <section class="glass-card agent-panel p-4 mt-5">
-            <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
-                <div>
-                    <span class="brand-eyebrow" style="opacity:0.85">Agentic</span>
-                    <h2 class="h4 mb-2 mt-1">에이전틱 DB 진단</h2>
-                    <p class="sub mb-0">
-                        추출된 DDL·샘플·용량 메타데이터를 바탕으로 로컬 LLM(Qwen 2.5/3 계열, Ollama·vLLM OpenAI API)이 2단계 분석 후 진단 리포트를 생성합니다.
-                        RTX 5070 등 로컬 GPU에 맞는 양자화 모델을 Ollama에 올려 두면 됩니다.
-                    </p>
-                </div>
-            </div>
-            <div class="safety-banner mt-3 mb-4">
-                <strong>데이터 안전</strong>:
-                진단(점검) 기능은 프로덕션 DB에 <strong>쓰기(INSERT/UPDATE/DELETE/DDL)를 하지 않습니다</strong>.
-                옵션 &ldquo;실시간 용량 스냅샷&rdquo;은 읽기 전용 시스템 카탈로그/용량 조회(SELECT)만 실행합니다.
-                리포트는 로컬 SQLite·화면에만 저장되며, LLM은 텍스트 생성만 합니다.
-                (대용량 모델 실행으로 인한 <strong>GPU/CPU·메모리 부하는</strong> 발생할 수 있습니다.)
-            </div>
-            <div class="ollama-toolbar border border-secondary rounded p-3 mb-4">
-                <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
-                    <span class="small text-secondary me-2">Ollama</span>
-                    <span id="ollamaStatusBadge" class="badge bg-secondary">미확인</span>
-                    <span id="ollamaVersionHint" class="small text-secondary"></span>
-                </div>
-                <div class="d-flex flex-wrap gap-2 mb-2">
-                    <button type="button" class="btn btn-outline-agent" onclick="refreshOllamaStatus()">상태·모델 목록 새로고침</button>
-                    <button type="button" class="btn btn-outline-agent" onclick="startOllamaServer()">Ollama 시작 (ollama serve)</button>
-                </div>
-                <p class="small text-secondary mb-3">원격/공용 서버에서는 <code>OLLAMA_ALLOW_WEB_START=0</code> 로 웹에서의 <code>ollama serve</code> 자동 기동을 끌 수 있습니다.</p>
-                <div class="row g-2 align-items-end">
-                    <div class="col-md-6">
-                        <label class="form-label text-secondary small">설치할 모델 (ollama pull)</label>
-                        <input type="text" id="ollamaPullName" class="form-control" placeholder="예: qwen2.5:7b, qwen3:8b">
-                    </div>
-                    <div class="col-md-6">
-                        <button type="button" class="btn btn-outline-agent mt-4 mt-md-0" onclick="startOllamaPull()">모델 다운로드 설치</button>
-                        <small class="text-secondary d-block mt-1">Ollama가 떠 있는 상태에서 실행됩니다. 용량·시간이 큽니다.</small>
-                    </div>
-                </div>
-                <div id="ollamaPullLog" class="mt-2 d-none border border-secondary rounded p-2 bg-dark"></div>
-            </div>
-            <datalist id="ollamaModelList"></datalist>
-            <div class="row g-3 align-items-end">
-                <div class="col-md-3">
-                    <label class="form-label text-secondary small">연결</label>
-                    <select id="diagConn" class="form-select"></select>
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label text-secondary small">데이터베이스 (추출 폴더)</label>
-                    <select id="diagDb" class="form-select"></select>
-                </div>
-                <div class="col-md-2">
-                    <label class="form-label text-secondary small">LLM API 베이스 (OpenAI 호환)</label>
-                    <input type="text" id="diagBase" class="form-control" value="http://127.0.0.1:11434/v1" placeholder="http://127.0.0.1:11434/v1">
-                </div>
-                <div class="col-md-2">
-                    <label class="form-label text-secondary small">모델명 (목록 또는 직접 입력)</label>
-                    <input type="text" id="diagModel" class="form-control" list="ollamaModelList" value="qwen2.5:latest" placeholder="qwen2.5:14b">
-                </div>
-                <div class="col-md-2 d-flex align-items-center pt-4">
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="diagLive">
-                        <label class="form-check-label small" for="diagLive">실시간 용량 스냅샷 병합</label>
-                    </div>
-                </div>
-            </div>
-            <div class="mt-3 d-flex flex-wrap gap-2 align-items-center">
-                <button type="button" class="btn-agent" id="diagRunBtn" onclick="startDiagnosis()">진단 실행 (백그라운드)</button>
-                <small class="text-secondary" id="diagHint">추출된 DB가 없으면 목록이 비어 있습니다. 먼저 상단에서 추출을 완료하세요.</small>
-            </div>
-            <div class="mt-5">
-                <div class="section-label">최근 진단 요약</div>
-                <div id="diagReports" class="list-group list-group-flush bg-transparent border border-secondary rounded overflow-hidden shadow-none"></div>
-            </div>
-        </section>
-    </div>
+        <p class="text-center text-secondary small mt-4 mb-0">
+            추출된 파일은 <code class="storage-hint">exports/</code> 폴더에 저장됩니다. AI 진단은 <a href="{{ url_for('agent_page') }}" class="link-accent">에이전틱 진단</a> 탭에서 실행하세요.
+        </p>
+{% endblock %}
 
-    <!-- DB Selection Modal -->
+{% block modals %}
     <div class="modal fade" id="dbModal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content glass-card bg-card border-secondary">
@@ -194,34 +109,13 @@
         </div>
       </div>
     </div>
+{% endblock %}
 
-    <div class="modal fade" id="diagReportModal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog modal-dialog-scrollable modal-lg modal-dialog-centered">
-        <div class="modal-content glass-card bg-card border-secondary">
-          <div class="modal-header border-secondary">
-            <h5 class="modal-title" id="diagReportTitle">진단 리포트</h5>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-          </div>
-          <div class="modal-body">
-            <div id="diagReportMeta" class="small text-secondary mb-3"></div>
-            <div id="diagReportBody" class="report-body"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+{% block page_scripts %}
     <script>
         let currentConnId = null;
         let dbSelections = {};
         const dbModal = new bootstrap.Modal(document.getElementById('dbModal'));
-        const diagReportModal = new bootstrap.Modal(document.getElementById('diagReportModal'));
-        let exportCatalog = [];
-
-        function escHtml(s) {
-            if (!s) return '';
-            return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-        }
 
         async function openDbModal(id, name) {
             currentConnId = id;
@@ -229,7 +123,7 @@
             dbModal.show();
             const res = await fetch(`/get_databases/${id}`);
             const data = await res.json();
-            if(data.success) {
+            if (data.success) {
                 let html = '<div class="list-group">';
                 data.databases.forEach(db => {
                     const checked = (dbSelections[id] || []).includes(db) ? 'checked' : '';
@@ -246,10 +140,15 @@
 
         async function startBatchExport() {
             const checks = document.querySelectorAll('.conn-check:checked');
-            if (!checks.length) return alert('No connections selected.');
+            if (!checks.length) return alert('연결을 선택하세요.');
             const selections = Array.from(checks).map(c => ({ conn_id: parseInt(c.dataset.id), databases: dbSelections[c.dataset.id] || [] }));
             await fetch('/batch_export', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ selections }) });
             refreshTasks();
+        }
+
+        function escHtml(s) {
+            if (!s) return '';
+            return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         }
 
         async function refreshTasks() {
@@ -274,183 +173,8 @@
             `).join('');
         }
 
-        async function loadExportCatalog() {
-            const res = await fetch('/export_catalog');
-            exportCatalog = await res.json();
-            const sel = document.getElementById('diagConn');
-            const prev = sel.value;
-            sel.innerHTML = '<option value="">— 연결 선택 —</option>' +
-                exportCatalog.map(e =>
-                    `<option value="${e.conn_id}">${e.conn_name} (추출 ${e.databases.length}개 DB)</option>`).join('');
-            if (prev) sel.value = prev;
-            sel.onchange = () => {
-                const id = sel.value;
-                const entry = exportCatalog.find(x => String(x.conn_id) === String(id));
-                const dbs = document.getElementById('diagDb');
-                dbs.innerHTML = entry ? entry.databases.map(d =>
-                    `<option value="${d.name}">${d.name}${d.has_metadata ? ' ●' : ''}</option>`).join('') : '';
-            };
-            sel.dispatchEvent(new Event('change'));
-        }
-
-        async function startDiagnosis() {
-            const conn = document.getElementById('diagConn').value;
-            const database = document.getElementById('diagDb').value;
-            if (!conn || !database) return alert('연결과 데이터베이스를 선택하세요.');
-            const body = {
-                conn_id: parseInt(conn, 10),
-                database,
-                llm_base_url: document.getElementById('diagBase').value.trim(),
-                model: document.getElementById('diagModel').value.trim(),
-                use_live: document.getElementById('diagLive').checked,
-            };
-            const btn = document.getElementById('diagRunBtn');
-            btn.disabled = true;
-            try {
-                const res = await fetch('/diagnosis/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body),
-                });
-                const data = await res.json();
-                if (!data.success) alert(data.error || '시작 실패');
-                else refreshDiagnosisReports();
-            } finally {
-                btn.disabled = false;
-            }
-        }
-
-        async function refreshDiagnosisReports() {
-            const res = await fetch('/diagnosis/reports');
-            const rows = await res.json();
-            const el = document.getElementById('diagReports');
-            if (!rows.length) {
-                el.innerHTML = '<div class="list-group-item border-0 bg-transparent"><div class="task-empty border-0">저장된 진단 리포트가 없습니다. 추출 후 진단을 실행해 보세요.</div></div>';
-                return;
-            }
-            el.innerHTML = rows.map(r => `
-                <button type="button" class="list-group-item list-group-item-action bg-transparent text-start border-secondary py-3 px-4 diag-report-item"
-                  onclick="openDiagnosisReport(${r.id})">
-                    <div class="d-flex justify-content-between align-items-center mb-1">
-                        <span class="fw-semibold">${r.conn_name} / ${r.database_name || '—'}</span>
-                        <span class="status-badge status-${(r.status || '').toLowerCase()}">${r.status}</span>
-                    </div>
-                    <div class="small text-secondary">${r.llm_model || ''} · ${r.created_at}</div>
-                    ${r.message ? `<div class="text-danger small mt-1">${r.message}</div>` : ''}
-                    ${r.preview ? `<div class="report-preview mt-2">${escHtml(r.preview)}</div>` : ''}
-                </button>
-            `).join('');
-        }
-
-        async function openDiagnosisReport(id) {
-            const res = await fetch('/diagnosis/report/' + id);
-            const r = await res.json();
-            document.getElementById('diagReportTitle').innerText = (r.conn_name || '') + ' / ' + (r.database_name || '');
-            document.getElementById('diagReportMeta').innerText =
-                `${r.status} · ${r.llm_model || ''} · ${r.created_at || ''}` + (r.message ? ' · 오류: ' + r.message : '');
-            document.getElementById('diagReportBody').innerText = r.report_text || '(내용 없음)';
-            diagReportModal.show();
-        }
-
-        function getDiagBase() {
-            return document.getElementById('diagBase').value.trim() || 'http://127.0.0.1:11434/v1';
-        }
-
-        let pullPollTimer = null;
-
-        async function refreshOllamaModelsOnly() {
-            const q = encodeURIComponent(getDiagBase());
-            const res = await fetch('/ollama/models?llm_base_url=' + q);
-            const d = await res.json();
-            const dl = document.getElementById('ollamaModelList');
-            dl.innerHTML = '';
-            if (d.success && d.models) {
-                d.models.forEach(m => {
-                    const o = document.createElement('option');
-                    o.value = m.name;
-                    dl.appendChild(o);
-                });
-            }
-        }
-
-        async function refreshOllamaStatus() {
-            const q = encodeURIComponent(getDiagBase());
-            const res = await fetch('/ollama/status?llm_base_url=' + q);
-            const d = await res.json();
-            const badge = document.getElementById('ollamaStatusBadge');
-            const ver = document.getElementById('ollamaVersionHint');
-            if (d.ok) {
-                badge.className = 'badge bg-success';
-                badge.textContent = '연결됨';
-                ver.textContent = (d.version ? ('v' + d.version + ' · ') : '') + (d.ollama_origin || '');
-            } else {
-                badge.className = 'badge bg-danger';
-                badge.textContent = '미연결';
-                ver.textContent = d.error || '';
-            }
-            if (d.ok) await refreshOllamaModelsOnly();
-            else document.getElementById('ollamaModelList').innerHTML = '';
-        }
-
-        async function startOllamaServer() {
-            const res = await fetch('/ollama/start', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ llm_base_url: getDiagBase() }),
-            });
-            const d = await res.json();
-            if (!d.ok) {
-                alert(d.error || '시작 실패');
-                refreshOllamaStatus();
-                return;
-            }
-            if (d.already_running) alert('이미 Ollama API에 연결할 수 있습니다.');
-            else alert('백그라운드에서 ollama serve 를 실행했습니다. 잠시 후 상태를 다시 확인하세요.');
-            refreshOllamaStatus();
-        }
-
-        async function startOllamaPull() {
-            const name = document.getElementById('ollamaPullName').value.trim();
-            if (!name) return alert('설치할 모델명을 입력하세요. (예: qwen2.5:7b)');
-            const logEl = document.getElementById('ollamaPullLog');
-            logEl.classList.remove('d-none');
-            logEl.textContent = 'pull 작업을 백그라운드에서 시작합니다…';
-            const res = await fetch('/ollama/pull', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name }),
-            });
-            const d = await res.json();
-            if (!d.success) {
-                logEl.textContent = d.error || '요청 실패';
-                return;
-            }
-            if (pullPollTimer) clearInterval(pullPollTimer);
-            pullPollTimer = setInterval(async () => {
-                const st = await fetch('/ollama/pull/status').then(r => r.json());
-                if (st.active) {
-                    logEl.textContent = '설치 중: ' + (st.model || name) + ' …';
-                } else {
-                    clearInterval(pullPollTimer);
-                    pullPollTimer = null;
-                    if (st.error) {
-                        logEl.textContent = '오류: ' + st.error + (st.log_tail ? '\n' + st.log_tail : '');
-                    } else {
-                        logEl.textContent = '완료: ' + (st.model || name);
-                        refreshOllamaModelsOnly();
-                        refreshOllamaStatus();
-                    }
-                }
-            }, 1200);
-        }
-
         setInterval(refreshTasks, 2000);
-        setInterval(refreshDiagnosisReports, 4000);
         document.getElementById('selectAll').onclick = (e) => document.querySelectorAll('.conn-check').forEach(c => c.checked = e.target.checked);
         refreshTasks();
-        loadExportCatalog();
-        refreshDiagnosisReports();
-        refreshOllamaStatus();
     </script>
-</body>
-</html>
+{% endblock %}
