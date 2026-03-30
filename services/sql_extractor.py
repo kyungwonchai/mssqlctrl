@@ -1,7 +1,7 @@
 import pymssql
 import pymysql
-import json
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 
 class BaseExtractor(ABC):
     @abstractmethod
@@ -20,6 +20,11 @@ class BaseExtractor(ABC):
     def get_table_sample(self, db_name, table_name): pass
     @abstractmethod
     def get_object_definition(self, db_name, object_name): pass
+
+    @abstractmethod
+    def get_database_health_snapshot(self, db_name):
+        """반환: 진단·용량 분석용 테이블별 행수/용량/인덱스 요약 (dict, JSON 직렬화 가능)."""
+        pass
 
 class MSSQLExtractor(BaseExtractor):
     def __init__(self, c):
@@ -68,6 +73,54 @@ class MSSQLExtractor(BaseExtractor):
                 cur.execute(f"SELECT definition FROM sys.sql_modules WHERE object_id=OBJECT_ID('{object_name}')")
                 r = cur.fetchone()
                 return r[0] if r else ""
+
+    def get_database_health_snapshot(self, db_name):
+        collected_at = datetime.now(timezone.utc).isoformat()
+        with self._conn(db_name) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT s.name, t.name, SUM(p.rows) AS row_count,
+                           CAST(SUM(a.total_pages) * 8.0 / 1024 AS DECIMAL(18,2)) AS total_mb
+                    FROM sys.tables t
+                    INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+                    INNER JOIN sys.indexes i ON t.object_id = i.object_id
+                    INNER JOIN sys.partitions p ON i.object_id = p.object_id AND i.index_id = p.index_id
+                    INNER JOIN sys.allocation_units a ON p.partition_id = a.container_id
+                    WHERE t.is_ms_shipped = 0 AND i.index_id IN (0,1)
+                    GROUP BY s.name, t.object_id, t.name
+                    """
+                )
+                rows = cur.fetchall()
+                cur.execute(
+                    """
+                    SELECT s.name, t.name, COUNT(i.index_id) AS index_count
+                    FROM sys.tables t
+                    INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+                    INNER JOIN sys.indexes i ON t.object_id = i.object_id
+                    WHERE i.index_id > 0 AND t.is_ms_shipped = 0
+                    GROUP BY s.name, t.object_id, t.name
+                    """
+                )
+                idx_map = {(r[0], r[1]): int(r[2]) for r in cur.fetchall()}
+        tables = []
+        for schema_name, table_name, row_count, total_mb in rows:
+            tables.append(
+                {
+                    "schema": schema_name,
+                    "name": table_name,
+                    "row_count": int(row_count or 0),
+                    "total_mb": float(total_mb or 0),
+                    "index_count": idx_map.get((schema_name, table_name), 0),
+                }
+            )
+        tables.sort(key=lambda x: x["total_mb"], reverse=True)
+        return {
+            "database": db_name,
+            "engine": "mssql",
+            "collected_at": collected_at,
+            "tables": tables,
+        }
 
 class MySQLExtractor(BaseExtractor):
     def __init__(self, c):
@@ -121,6 +174,52 @@ class MySQLExtractor(BaseExtractor):
                         cur.execute(f"SHOW CREATE PROCEDURE `{object_name}`")
                         return cur.fetchone()[2]
                     except: return "-- Source not found"
+
+    def get_database_health_snapshot(self, db_name):
+        collected_at = datetime.now(timezone.utc).isoformat()
+        with self._conn(db_name) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT TABLE_NAME, TABLE_ROWS,
+                           ROUND(COALESCE(DATA_LENGTH,0) / 1024 / 1024, 2) AS data_mb,
+                           ROUND(COALESCE(INDEX_LENGTH,0) / 1024 / 1024, 2) AS index_mb
+                    FROM information_schema.TABLES
+                    WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
+                    """,
+                    (db_name,),
+                )
+                rows = cur.fetchall()
+                cur.execute(
+                    """
+                    SELECT TABLE_NAME, COUNT(DISTINCT INDEX_NAME) AS idx_count
+                    FROM information_schema.STATISTICS
+                    WHERE TABLE_SCHEMA = %s
+                    GROUP BY TABLE_NAME
+                    """,
+                    (db_name,),
+                )
+                idx_map = {r[0]: int(r[1]) for r in cur.fetchall()}
+        tables = []
+        for table_name, row_est, data_mb, index_mb in rows:
+            tables.append(
+                {
+                    "schema": None,
+                    "name": table_name,
+                    "row_count": int(row_est or 0),
+                    "data_mb": float(data_mb or 0),
+                    "index_mb": float(index_mb or 0),
+                    "total_mb": float((data_mb or 0) + (index_mb or 0)),
+                    "index_count": idx_map.get(table_name, 0),
+                }
+            )
+        tables.sort(key=lambda x: x["total_mb"], reverse=True)
+        return {
+            "database": db_name,
+            "engine": "mysql",
+            "collected_at": collected_at,
+            "tables": tables,
+        }
 
 def get_extractor(conn_info):
     if conn_info.db_type == 'mssql': return MSSQLExtractor(conn_info)

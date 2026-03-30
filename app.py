@@ -1,9 +1,13 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
-import os, threading
+import os
+import threading
 from datetime import datetime
-from models import db, DBConnection, ExtractionTask
+from sqlalchemy import inspect as sa_inspect, text
+
+from models import db, DBConnection, ExtractionTask, DiagnosisReport
 from services.sql_extractor import get_extractor
 from services.file_manager import ExportManager
+from services.agentic_diagnosis import build_diagnosis_context, run_agentic_diagnosis
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///connections.db'
@@ -13,6 +17,33 @@ app.secret_key = 'db_ctrl_secret'
 db.init_app(app)
 EXPORT_ROOT = os.path.join(os.getcwd(), 'exports')
 if not os.path.exists(EXPORT_ROOT): os.makedirs(EXPORT_ROOT)
+
+
+def ensure_diagnosis_schema():
+    if "sqlite" not in app.config["SQLALCHEMY_DATABASE_URI"]:
+        return
+    insp = sa_inspect(db.engine)
+    if not insp.has_table("diagnosis_report"):
+        return
+    with db.engine.connect() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(diagnosis_report)"))}
+        for stmt in (
+            "ALTER TABLE diagnosis_report ADD COLUMN database_name VARCHAR(200)",
+            "ALTER TABLE diagnosis_report ADD COLUMN status VARCHAR(20)",
+            "ALTER TABLE diagnosis_report ADD COLUMN message TEXT",
+            "ALTER TABLE diagnosis_report ADD COLUMN llm_model VARCHAR(120)",
+            "ALTER TABLE diagnosis_report ADD COLUMN completed_at DATETIME",
+        ):
+            col = stmt.split("ADD COLUMN ")[1].split()[0]
+            if col not in cols:
+                conn.execute(text(stmt))
+                conn.commit()
+
+
+with app.app_context():
+    db.create_all()
+    ensure_diagnosis_schema()
+
 
 @app.route('/')
 def index():
@@ -67,7 +98,11 @@ def run_extraction(task_id, selections):
                     for ot, meth in [('views','get_views'),('procedures','get_procedures'),('triggers','get_triggers')]:
                         for o in getattr(ext, meth)(db_name):
                             mgr.save_object(db_name, ot, o, ext.get_object_definition(db_name, o))
-                    
+                    try:
+                        mgr.save_db_metadata(db_name, ext.get_database_health_snapshot(db_name))
+                    except Exception as meta_err:
+                        mgr.save_db_metadata(db_name, {'database': db_name, 'error': str(meta_err)})
+
                     current_step += 1
                     task.progress = int((current_step / total_steps) * 100)
                     db.session.commit()
@@ -100,6 +135,120 @@ def get_tasks():
         'created_at': t.created_at.strftime('%H:%M:%S')
     } for t in tasks])
 
+
+@app.route('/export_catalog')
+def export_catalog():
+    out = []
+    for c in DBConnection.query.all():
+        slug = c.name.replace(" ", "_")
+        root = os.path.join(EXPORT_ROOT, slug)
+        databases = []
+        if os.path.isdir(root):
+            for name in sorted(os.listdir(root)):
+                p = os.path.join(root, name)
+                if os.path.isdir(p) and os.path.isdir(os.path.join(p, "tables")):
+                    databases.append({
+                        "name": name,
+                        "has_metadata": os.path.isfile(os.path.join(p, "db_metadata.json")),
+                    })
+        out.append({"conn_id": c.id, "conn_name": c.name, "databases": databases})
+    return jsonify(out)
+
+
+def run_diagnosis_job(report_id, conn_id, database_name, use_live, llm_base, llm_model, api_key):
+    with app.app_context():
+        report = DiagnosisReport.query.get(report_id)
+        conn = DBConnection.query.get(conn_id)
+        if not report or not conn:
+            return
+        try:
+            report.status = "Running"
+            db.session.commit()
+            live = None
+            if use_live:
+                ext = get_extractor(conn)
+                live = ext.get_database_health_snapshot(database_name)
+            ctx = build_diagnosis_context(
+                EXPORT_ROOT, conn.name, database_name, live_snapshot=live
+            )
+            if len(ctx.strip()) < 80:
+                raise ValueError(
+                    "진단 컨텍스트가 없습니다. 해당 연결에서 DB 추출을 먼저 실행하세요."
+                )
+            report.report_text = run_agentic_diagnosis(
+                ctx, llm_base, llm_model, api_key=api_key
+            )
+            report.status = "Completed"
+            report.message = None
+        except Exception as e:
+            report.status = "Failed"
+            report.message = str(e)
+        finally:
+            report.completed_at = datetime.utcnow()
+            db.session.commit()
+
+
+@app.route('/diagnosis/start', methods=['POST'])
+def diagnosis_start():
+    data = request.json or {}
+    conn_id = data.get("conn_id")
+    database_name = data.get("database")
+    if conn_id is None or not database_name:
+        return jsonify({"success": False, "error": "conn_id 와 database 가 필요합니다."}), 400
+    c = DBConnection.query.get_or_404(conn_id)
+    base = (data.get("llm_base_url") or os.getenv("LLM_BASE_URL") or "http://127.0.0.1:11434/v1").rstrip("/")
+    model = data.get("model") or os.getenv("LLM_MODEL") or "qwen2.5:latest"
+    api_key = data.get("api_key") or os.getenv("LLM_API_KEY") or None
+    use_live = bool(data.get("use_live"))
+    report = DiagnosisReport(
+        conn_name=c.name,
+        database_name=database_name,
+        status="Pending",
+        llm_model=model,
+    )
+    db.session.add(report)
+    db.session.commit()
+    threading.Thread(
+        target=run_diagnosis_job,
+        args=(report.id, conn_id, database_name, use_live, base, model, api_key),
+    ).start()
+    return jsonify({"success": True, "report_id": report.id})
+
+
+@app.route('/diagnosis/reports')
+def diagnosis_reports():
+    rows = DiagnosisReport.query.order_by(DiagnosisReport.created_at.desc()).limit(30).all()
+    return jsonify([
+        {
+            "id": r.id,
+            "conn_name": r.conn_name,
+            "database_name": r.database_name,
+            "status": r.status,
+            "message": r.message,
+            "llm_model": r.llm_model,
+            "created_at": r.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "completed_at": r.completed_at.strftime("%Y-%m-%d %H:%M:%S") if r.completed_at else None,
+            "preview": (r.report_text or "")[:280],
+        }
+        for r in rows
+    ])
+
+
+@app.route('/diagnosis/report/<int:report_id>')
+def diagnosis_report_one(report_id):
+    r = DiagnosisReport.query.get_or_404(report_id)
+    return jsonify({
+        "id": r.id,
+        "conn_name": r.conn_name,
+        "database_name": r.database_name,
+        "status": r.status,
+        "message": r.message,
+        "llm_model": r.llm_model,
+        "report_text": r.report_text or "",
+        "created_at": r.created_at.isoformat(),
+        "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+    })
+
+
 if __name__ == '__main__':
-    with app.app_context(): db.create_all()
     app.run(host='0.0.0.0', port=10701, debug=True)

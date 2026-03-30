@@ -4,6 +4,8 @@
     --bg-hover: #21262d;
     --accent: #58a6ff;
     --accent-glow: rgba(88, 166, 255, 0.3);
+    --agent-accent: #a855f7;
+    --agent-glow: rgba(168, 85, 247, 0.25);
     --text-primary: #c9d1d9;
     --text-secondary: #8b949e;
     --border: #30363d;
@@ -93,3 +95,60 @@ input, select {
 }
 
 input:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 2px var(--accent-glow) !important; }
+
+.agent-panel {
+    border-color: rgba(168, 85, 247, 0.45);
+    box-shadow: 0 8px 40px var(--agent-glow);
+}
+
+.agent-panel h2 {
+    font-weight: 700;
+    color: #e6ddf5;
+    letter-spacing: -0.02em;
+}
+
+.agent-panel .sub {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    max-width: 52rem;
+}
+
+.btn-agent {
+    background: linear-gradient(135deg, #7c3aed, #a855f7);
+    border: none;
+    color: #fff;
+    font-weight: 600;
+    padding: 0.65rem 1.25rem;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px var(--agent-glow);
+}
+
+.btn-agent:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-agent:not(:disabled):hover {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+}
+
+.report-preview {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    max-height: 4.5em;
+    overflow: hidden;
+}
+
+.report-body {
+    white-space: pre-wrap;
+    font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+    font-size: 0.88rem;
+    line-height: 1.55;
+    color: var(--text-primary);
+    max-height: min(70vh, 520px);
+    overflow-y: auto;
+}
+
+.status-pending { background: rgba(210, 153, 34, 0.15); color: #e3b341; border: 1px solid #e3b341; }

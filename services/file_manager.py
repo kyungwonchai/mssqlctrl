@@ -35,3 +35,8 @@ class ExportManager:
         file_path = os.path.join(self.root, db_name, folder, f"{name}.sql")
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(code if code else "")
+
+    def save_db_metadata(self, db_name, metadata):
+        path = os.path.join(self.root, db_name, 'db_metadata.json')
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False, default=str)
