@@ -20,3 +20,9 @@ class ExtractionTask(db.Model):
     message = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     completed_at = db.Column(db.DateTime)
+
+class DiagnosisReport(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    conn_name = db.Column(db.String(100))
+    report_text = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
