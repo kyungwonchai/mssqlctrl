@@ -8,6 +8,15 @@ from models import db, DBConnection, ExtractionTask, DiagnosisReport
 from services.sql_extractor import get_extractor
 from services.file_manager import ExportManager
 from services.agentic_diagnosis import build_diagnosis_context, run_agentic_diagnosis
+from services.ollama_control import (
+    v1_base_to_origin,
+    ollama_ping,
+    ollama_version,
+    ollama_list_models,
+    try_start_ollama_server,
+    start_pull_in_thread,
+    pull_status,
+)
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///connections.db'
@@ -91,17 +100,23 @@ def run_extraction(task_id, selections):
                 
                 for db_name in dbs:
                     mgr.create_db_structure(db_name)
+                    expected_files = set()
                     # Tables
                     for t in ext.get_tables(db_name):
+                        expected_files.add(f"tables/{t}_schema.sql")
+                        expected_files.add(f"tables/{t}_sample.json")
                         mgr.save_table_data(db_name, t, ext.get_table_ddl(db_name, t), ext.get_table_sample(db_name, t))
                     # Others
                     for ot, meth in [('views','get_views'),('procedures','get_procedures'),('triggers','get_triggers')]:
                         for o in getattr(ext, meth)(db_name):
+                            expected_files.add(f"{ot}/{o}.sql")
                             mgr.save_object(db_name, ot, o, ext.get_object_definition(db_name, o))
                     try:
                         mgr.save_db_metadata(db_name, ext.get_database_health_snapshot(db_name))
                     except Exception as meta_err:
                         mgr.save_db_metadata(db_name, {'database': db_name, 'error': str(meta_err)})
+                    expected_files.add("db_metadata.json")
+                    mgr.prune_db_export(db_name, expected_files)
 
                     current_step += 1
                     task.progress = int((current_step / total_steps) * 100)
@@ -137,6 +152,76 @@ def get_tasks():
 
 
 @app.route('/export_catalog')
+def _llm_v1_base_from_request():
+    if request.method == "GET":
+        raw = request.args.get("llm_base_url")
+    else:
+        raw = (request.json or {}).get("llm_base_url")
+    return (raw or os.getenv("LLM_BASE_URL") or "http://127.0.0.1:11434/v1").strip().rstrip(
+        "/"
+    )
+
+
+@app.route("/ollama/status")
+def ollama_status():
+    v1 = _llm_v1_base_from_request()
+    origin = v1_base_to_origin(v1)
+    ok, err = ollama_ping(origin)
+    ver = ollama_version(origin) if ok else None
+    return jsonify(
+        {
+            "ok": ok,
+            "llm_base_url": v1,
+            "ollama_origin": origin,
+            "error": err,
+            "version": ver,
+        }
+    )
+
+
+@app.route("/ollama/models")
+def ollama_models():
+    v1 = _llm_v1_base_from_request()
+    origin = v1_base_to_origin(v1)
+    try:
+        models = ollama_list_models(origin)
+        return jsonify({"success": True, "models": models, "ollama_origin": origin})
+    except Exception as e:
+        return jsonify(
+            {
+                "success": False,
+                "error": str(e),
+                "models": [],
+                "ollama_origin": origin,
+            }
+        ), 502
+
+
+@app.route("/ollama/start", methods=["POST"])
+def ollama_start():
+    v1 = _llm_v1_base_from_request()
+    origin = v1_base_to_origin(v1)
+    out = try_start_ollama_server(origin)
+    out["ollama_origin"] = origin
+    out["llm_base_url"] = v1
+    return jsonify(out)
+
+
+@app.route("/ollama/pull", methods=["POST"])
+def ollama_pull():
+    data = request.json or {}
+    name = data.get("name") or data.get("model")
+    ok, err = start_pull_in_thread(name)
+    if not ok:
+        return jsonify({"success": False, "error": err}), 400
+    return jsonify({"success": True})
+
+
+@app.route("/ollama/pull/status")
+def ollama_pull_status():
+    return jsonify(pull_status())
+
+
 def export_catalog():
     out = []
     for c in DBConnection.query.all():
