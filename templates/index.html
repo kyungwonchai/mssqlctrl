@@ -3,100 +3,161 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MSSQL Controller - Dark Mode</title>
+    <title>MSSQL Controller - Batch Mode</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        .loader { display: none; margin-left: 10px; width: 1rem; height: 1rem; }
+    </style>
 </head>
 <body class="bg-dark text-light">
     <div class="container py-5">
-        <h1 class="mb-4">MSSQL Controller</h1>
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>MSSQL Controller</h1>
+            <button class="btn btn-primary btn-lg" onclick="startBatchExport()">Export Checked Connections</button>
+        </div>
         
         {% with messages = get_flashed_messages() %}
-          {% if messages %}
-            {% for message in messages %}
-              <div class="alert alert-info alert-dismissible fade show bg-secondary text-light border-0" role="alert">
-                {{ message }}
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert" aria-label="Close"></button>
-              </div>
-            {% endfor %}
-          {% endif %}
+          {% if messages %}{% for message in messages %}
+            <div class="alert alert-info bg-secondary text-light border-0 mb-3">{{ message }}</div>
+          {% endfor %}{% endif %}
         {% endwith %}
 
         <div class="row">
-            <!-- Connection Form -->
             <div class="col-md-4">
                 <div class="card bg-secondary text-light mb-4">
-                    <div class="card-header border-bottom border-dark">
-                        <h5 class="mb-0">Add Connection</h5>
-                    </div>
+                    <div class="card-header"><h5>Add Connection</h5></div>
                     <div class="card-body">
                         <form action="{{ url_for('add_connection') }}" method="POST">
-                            <div class="mb-3">
-                                <label class="form-label">Name</label>
-                                <input type="text" name="name" class="form-control bg-dark text-light border-0" required>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">Host</label>
-                                <input type="text" name="host" class="form-control bg-dark text-light border-0" required>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">Port</label>
-                                <input type="number" name="port" class="form-control bg-dark text-light border-0" value="1433" required>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">User</label>
-                                <input type="text" name="user" class="form-control bg-dark text-light border-0" required>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">Password</label>
-                                <input type="password" name="password" class="form-control bg-dark text-light border-0" required>
-                            </div>
-                            <button type="submit" class="btn btn-primary w-100">Save</button>
+                            <input type="text" name="name" placeholder="Connection Name" class="form-control mb-2 bg-dark text-light border-0" required>
+                            <input type="text" name="host" placeholder="Host" class="form-control mb-2 bg-dark text-light border-0" required>
+                            <input type="number" name="port" value="10701" class="form-control mb-2 bg-dark text-light border-0" required>
+                            <input type="text" name="user" placeholder="User" class="form-control mb-2 bg-dark text-light border-0" required>
+                            <input type="password" name="password" placeholder="Password" class="form-control mb-3 bg-dark text-light border-0" required>
+                            <button type="submit" class="btn btn-primary w-100">Add</button>
                         </form>
                     </div>
                 </div>
             </div>
 
-            <!-- Connection List -->
             <div class="col-md-8">
                 <div class="card bg-secondary text-light">
-                    <div class="card-header border-bottom border-dark">
-                        <h5 class="mb-0">Saved Connections</h5>
-                    </div>
+                    <div class="card-header"><h5>Connections</h5></div>
                     <div class="card-body p-0">
-                        <div class="table-responsive">
-                            <table class="table table-dark table-hover mb-0">
-                                <thead>
-                                    <tr>
-                                        <th>Name</th>
-                                        <th>Host:Port</th>
-                                        <th>User</th>
-                                        <th>Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for conn in connections %}
-                                    <tr>
-                                        <td>{{ conn.name }}</td>
-                                        <td>{{ conn.host }}:{{ conn.port }}</td>
-                                        <td>{{ conn.user }}</td>
-                                        <td>
-                                            <a href="{{ url_for('export_database', conn_id=conn.id) }}" class="btn btn-sm btn-success">Extract All</a>
-                                        </td>
-                                    </tr>
-                                    {% else %}
-                                    <tr>
-                                        <td colspan="4" class="text-center py-4">No connections found.</td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
-                        </div>
+                        <table class="table table-dark table-hover mb-0">
+                            <thead>
+                                <tr>
+                                    <th><input type="checkbox" id="selectAll"></th>
+                                    <th>Name</th>
+                                    <th>Address</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for conn in connections %}
+                                <tr id="row-{{ conn.id }}">
+                                    <td><input type="checkbox" class="conn-check" data-id="{{ conn.id }}"></td>
+                                    <td>{{ conn.name }}</td>
+                                    <td>{{ conn.host }}:{{ conn.port }}</td>
+                                    <td>
+                                        <button class="btn btn-sm btn-info" onclick="openDbModal({{ conn.id }}, '{{ conn.name }}')">Select DBs</button>
+                                        <div class="spinner-border text-info loader" id="loader-{{ conn.id }}" role="status"></div>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
         </div>
     </div>
+
+    <!-- DB Selection Modal -->
+    <div class="modal fade" id="dbModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered modal-dark">
+        <div class="modal-content bg-secondary text-light">
+          <div class="modal-header border-dark">
+            <h5 class="modal-title" id="modalTitle">Select Databases</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body" id="dbList">
+            <div class="text-center">Loading...</div>
+          </div>
+          <div class="modal-footer border-dark">
+            <button type="button" class="btn btn-primary" onclick="confirmDbSelection()">Confirm Selection</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let currentConnId = null;
+        let dbSelections = {}; // {conn_id: [db_name1, db_name2]}
+
+        const dbModal = new bootstrap.Modal(document.getElementById('dbModal'));
+
+        async function openDbModal(connId, name) {
+            currentConnId = connId;
+            document.getElementById('modalTitle').innerText = `${name} - Databases`;
+            document.getElementById('dbList').innerHTML = '<div class="text-center"><div class="spinner-border"></div></div>';
+            dbModal.show();
+
+            const res = await fetch(`/get_databases/${connId}`);
+            const data = await res.json();
+            if(data.success) {
+                let html = '<div class="list-group bg-dark">';
+                data.databases.forEach(db => {
+                    const checked = (dbSelections[connId] || []).includes(db) ? 'checked' : '';
+                    html += `
+                        <label class="list-group-item list-group-item-action bg-dark text-light border-secondary">
+                            <input class="form-check-input me-1 db-check" type="checkbox" value="${db}" ${checked}> ${db}
+                        </label>`;
+                });
+                html += '</div>';
+                document.getElementById('dbList').innerHTML = html;
+            } else {
+                document.getElementById('dbList').innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+            }
+        }
+
+        function confirmDbSelection() {
+            const checks = document.querySelectorAll('.db-check:checked');
+            dbSelections[currentConnId] = Array.from(checks).map(c => c.value);
+            dbModal.hide();
+        }
+
+        async function startBatchExport() {
+            const checks = document.querySelectorAll('.conn-check:checked');
+            if (checks.length === 0) return alert('Select connections first.');
+
+            const selections = Array.from(checks).map(c => {
+                const id = parseInt(c.dataset.id);
+                return { conn_id: id, databases: dbSelections[id] || [] };
+            });
+
+            // Show Loaders
+            selections.forEach(s => document.getElementById(`loader-${s.conn_id}`).style.display = 'inline-block');
+
+            try {
+                const res = await fetch('/batch_export', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ selections })
+                });
+                const data = await res.json();
+                alert(data.messages.join('\n'));
+            } catch (e) {
+                alert('Export failed: ' + e);
+            } finally {
+                selections.forEach(s => document.getElementById(`loader-${s.conn_id}`).style.display = 'none');
+            }
+        }
+
+        document.getElementById('selectAll').addEventListener('change', (e) => {
+            document.querySelectorAll('.conn-check').forEach(c => c.checked = e.target.checked);
+        });
+    </script>
 </body>
 </html>

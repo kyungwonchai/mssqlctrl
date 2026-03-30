@@ -82,6 +82,61 @@ def export_database(conn_id):
     
     return redirect(url_for('index'))
 
+@app.route('/get_databases/<int:conn_id>')
+def get_databases(conn_id):
+    conn_info = MSSQLConnection.query.get_or_404(conn_id)
+    extractor = SQLExtractorService(conn_info)
+    try:
+        databases = extractor.get_databases()
+        # Filter system DBs
+        filtered = [db for db in databases if db not in ['master', 'tempdb', 'model', 'msdb']]
+        return jsonify({'success': True, 'databases': filtered})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/batch_export', methods=['POST'])
+def batch_export():
+    data = request.json
+    selections = data.get('selections', []) # List of {conn_id, databases: []}
+    
+    results = []
+    for selection in selections:
+        conn_id = selection.get('conn_id')
+        db_names = selection.get('databases') # If empty, extract all
+        
+        conn_info = MSSQLConnection.query.get(conn_id)
+        if not conn_info: continue
+        
+        extractor = SQLExtractorService(conn_info)
+        manager = ExportManager(EXPORT_ROOT, conn_info.name)
+        
+        try:
+            if not db_names:
+                db_names = [d for d in extractor.get_databases() if d not in ['master', 'tempdb', 'model', 'msdb']]
+            
+            for db_name in db_names:
+                manager.create_db_structure(db_name)
+                
+                # Extract Tables
+                tables = extractor.get_tables(db_name)
+                for table in tables:
+                    ddl = extractor.get_table_ddl(db_name, table)
+                    sample = extractor.get_table_sample(db_name, table)
+                    manager.save_table_data(db_name, table, ddl, sample)
+                
+                # Extract Views, Procs, Triggers
+                for obj_type, method in [('views', 'get_views'), ('procedures', 'get_procedures'), ('triggers', 'get_triggers')]:
+                    objects = getattr(extractor, method)(db_name)
+                    for obj in objects:
+                        code = extractor.get_object_definition(db_name, obj)
+                        manager.save_object(db_name, obj_type, obj, code)
+            
+            results.append(f"Successfully exported {conn_info.name}")
+        except Exception as e:
+            results.append(f"Error exporting {conn_info.name}: {str(e)}")
+            
+    return jsonify({'success': True, 'messages': results})
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
